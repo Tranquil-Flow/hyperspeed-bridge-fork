@@ -28,6 +28,7 @@ contract RemoteChallenger is IRemoteChallenger, Router {
         hsm = HyperlaneServiceManager(_hsm);
     }
 
+    /// @dev What to do when a relayer receives a message from the remote router
     function _handle(
         uint32 _origin,
         bytes32 _sender,
@@ -55,7 +56,8 @@ contract RemoteChallenger is IRemoteChallenger, Router {
     }
 
     /// @notice Handles a challenge for an operator
-    /// @param operator The address of the operator
+    /// Here we will slash 100% of the operator stake.
+    /// The idea would to assess a slashing percentage depending on the seriousness of the fraud
     function handleChallenge(address operator) public {
         hsm.freezeOperator(operator);
     }
