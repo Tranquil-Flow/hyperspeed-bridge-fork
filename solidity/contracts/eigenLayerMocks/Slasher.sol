@@ -17,9 +17,19 @@ contract Slasher is ISlasher {
     mapping(address => bool) public isELOperator;
     mapping(address => uint256) public operatorStake;
 
-    function registerOperator(address operator, uint32 stake) external {
+    function registerOperator(address operator) external payable {
         isELOperator[operator] = true;
-        operatorStake[operator] = stake;
+        operatorStake[operator] = msg.value;
+    }
+
+    function getOperatorStake(
+        address operator
+    ) external view returns (uint256) {
+        return operatorStake[operator];
+    }
+
+    function isOperator(address operator) external view returns (bool) {
+        return isELOperator[operator];
     }
 
     /// @notice We assume the function freezeOperator has security mechanism to prevent anyone to slash an operator
@@ -32,5 +42,8 @@ contract Slasher is ISlasher {
             value: operatorStake[operator]
         }("");
         require(success, "Transfer to insurance fund failed");
+
+        operatorStake[operator] = 0;
+        isELOperator[operator] = false;
     }
 }
