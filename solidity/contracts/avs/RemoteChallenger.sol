@@ -21,7 +21,7 @@ import "../AttributeCheckpointFraud.sol";
 /**
  * @dev Contract on the Ethereum L1 (Sepolia) chain, which receives a fraud proof and slash the operator
  */
-contract NativeChallenger is IRemoteChallenger, Router {
+contract RemoteChallenger is IRemoteChallenger, Router {
     HyperlaneServiceManager public hsm;
 
     constructor(address _mailbox, address _hsm) Router(_mailbox) {

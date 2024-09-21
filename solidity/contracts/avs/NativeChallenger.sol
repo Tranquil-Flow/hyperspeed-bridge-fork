@@ -34,7 +34,7 @@ contract NativeChallenger is AttributeCheckpointFraud, INativeChallenger {
     address public remoteChallenger;
 
     /// @notice Destination domain of the Ethereum L1 (Sepolia)
-    uint32 public constant destinationDomain = 11155111;
+    uint32 public constant destinationDomain = 17000;
 
     // Mapping to store if a root has been re-orged
     mapping(bytes32 => bool) internal hasBeenReOrged;
