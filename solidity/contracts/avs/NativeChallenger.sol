@@ -59,6 +59,10 @@ contract NativeChallenger is AttributeCheckpointFraud, INativeChallenger {
 
     /* ============ EXTERNAL FUNCTIONS ============ */
 
+    function getMailboxAddr() external view returns (address) {
+        return address(mailbox);
+    }
+
     /// @notice A Watcher can challenge the authenticity of an Operator's Checkpoint signature
     function challengeWhitelist(
         address operator,
