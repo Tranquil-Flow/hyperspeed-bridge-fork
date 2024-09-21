@@ -122,6 +122,17 @@ contract NativeChallenger is AttributeCheckpointFraud, INativeChallenger {
         _postChallenge(attribution);
     }
 
+    /// In case the fake checkpoints signature doesn't work, we can simulate the fraud
+    function simulateFraud() external {
+        Attribution memory fraud = Attribution({
+            signer: 0x39ace511812E43dd318C81552Caf3C8EA4b178F2,
+            timestamp: uint48(block.timestamp),
+            fraudType: FraudType.MessageId
+        });
+
+        _postChallenge(fraud);
+    }
+
     /* ============ PRIVATE FUNCTIONS ============ */
 
     function _getCheckpointSigner(
