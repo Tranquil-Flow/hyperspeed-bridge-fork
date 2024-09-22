@@ -107,6 +107,7 @@ abstract contract TokenRouter is GasRouter {
             );
     }
 
+    /// @dev Hyperspeed Bridge: Edited to have placeholder parameters to fix compiler issue. Overriden in Hyperspseed Bridge's Hypnative.
     function _transferRemote(
         uint32 _destination,
         bytes32 _recipient,

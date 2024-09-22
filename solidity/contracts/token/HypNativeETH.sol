@@ -5,32 +5,7 @@ import {TokenRouter} from "./libs/TokenRouter.sol";
 import {TokenMessage} from "./libs/TokenMessage.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-
-// Interfaces for price feeds
-interface AggregatorV3Interface {
-    function latestRoundData()
-        external
-        view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
-}
-
-interface IUmbrellaFeeds {
-    struct PriceData {
-        uint128 price;
-        uint32 timestamp;
-        uint24 heartbeat;
-    }
-
-    function getPriceDataByName(
-        string calldata _name
-    ) external view returns (PriceData memory data);
-}
+import {AggregatorV3Interface} from "./interfaces/Aggregator.sol";
 
 interface IInsuranceFund {
     function liquidateForReorg(uint256 amount) external returns (bool);
@@ -40,15 +15,15 @@ interface IInsuranceFund {
  * @title Hyperlane Native Token Router that extends ERC20 with remote transfer functionality.
  * @author Abacus Works
  * @dev Supply on each chain is not constant but the aggregate supply across all chains is.
- * @dev Hyperspeed Bridge: This is a combined version of HypNative for both Ethereum and Rootstock, allowing for:
- * - Bridging of native tokens across chains (i.e. deposit ETH on Ethereum and receive RBTC on Rootstock, and vice versa)
+ * @dev Hyperspeed Bridge: This is an edited version of HypNative, allowing for:
+ * - Bridging of native tokens across chains (i.e. deposit ETH on Ethereum and receive RBTC on Rootstock)
  * - Instant transfer of bridged assets, ignoring finality as long as the currently bridging amount does not exceed the insurance fund.
  * - Depositing of liquidity which is utilized by the contract for handling withdrawals and earns bridging fees.
  */
+
 contract HypNative is TokenRouter, ReentrancyGuard {
+    AggregatorV3Interface internal dataFeed;
     IInsuranceFund public insuranceFund;
-    AggregatorV3Interface public chainlinkDataFeed;
-    IUmbrellaFeeds public umbrellaFeeds;
 
     struct TransferRecord {
         uint256 amount; // The amount of USD value being bridged
@@ -71,10 +46,10 @@ contract HypNative is TokenRouter, ReentrancyGuard {
     mapping(uint32 => ReorgedTransfer[]) public reorgedTransfers; // Stores all reorged transfers.
     PendingTransfer[] public pendingTransfers; // Stores all pending transfers.
 
-    uint256 public otherChainInsuranceFundAmount; // Stores the amount of USD value in the Insurance Fund on the other chain
-    uint256 public otherChainAvailableLiquidity; // Stores the amount of USD value in the available liquidity on the other chain
+    uint256 public rootstockInsuranceFundAmount; // Stores the amount of USD value in the Insurance Fund on Rootstock
+    uint256 public rootstockAvailableLiquidity; // Stores the amount of USD value in the available liquidity on Rootstock
     uint256 public pendingBridgeAmount; // The amount of USD value that is currently being bridged and has not reached finality.
-    uint256 public constant FINALITY_PERIOD = 12; // The number of blocks required for finality.
+    uint256 public constant FINALITY_PERIOD = 12; // The number of blocks required for finality on Ethereum.
 
     uint256 public nextTransferId; // The next transfer ID to be used
 
@@ -89,9 +64,6 @@ contract HypNative is TokenRouter, ReentrancyGuard {
     mapping(address => uint256) public userFeeIndex; // The fee index for a user, representing when they last claimed their fees
     uint256 public feeIndex; // The current fee index, increases each time fees are distributed
     uint256 private constant PRECISION = 1e18;
-
-    bool public isEthereum; // Determines whether this contract is deployed on Ethereum or Rootstock
-    bool public networkSet; // Flag to ensure the network is set only once
 
     /**
      * @dev Emitted when native tokens are donated to the contract.
@@ -114,38 +86,22 @@ contract HypNative is TokenRouter, ReentrancyGuard {
      * @dev Constructor for the HypNative contract.
      * @param _mailbox The address of the mailbox contract.
      */
-    constructor(address _mailbox) TokenRouter(_mailbox) {}
-
-    /**
-     * @dev Sets whether the contract is deployed on Ethereum or Rootstock.
-     * @param _isEthereum True if the contract is on Ethereum, false if on Rootstock.
-     * @param _insuranceFund The address of the Insurance Fund contract.
-     */
-    function setNetwork(bool _isEthereum, address _insuranceFund) external {
-        require(!networkSet, "Network already set");
-        isEthereum = _isEthereum;
-        networkSet = true;
-
-        if (isEthereum) {
-            // Ethereum Sepolia Chainlink Data Feed
-            chainlinkDataFeed = AggregatorV3Interface(
-                0x694AA1769357215DE4FAC081bf1f309aDC325306
-            );
-        } else {
-            // Rootstock Testnet UmbrellaFeeds
-            umbrellaFeeds = IUmbrellaFeeds(
-                0x3F2254bc49d2d6e8422D71cB5384fB76005558A9
-            );
-        }
-
-        insuranceFund = IInsuranceFund(_insuranceFund);
+    constructor(address _mailbox) TokenRouter(_mailbox) {
+        // Ethereum Mainnet Chainlink Data Feed: 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419
+        // Ethereum Sepolia Chainlink Data Feed: 0x694AA1769357215DE4FAC081bf1f309aDC325306
+        dataFeed = AggregatorV3Interface(
+            0x694AA1769357215DE4FAC081bf1f309aDC325306
+        );
+        insuranceFund = IInsuranceFund(
+            0x0000000000000000000000000000000000000000
+        ); // TODO: Change
     }
 
     /**
      * @notice Initializes the Hyperlane router
      * @param _hook The post-dispatch hook contract.
-     * @param _interchainSecurityModule The interchain security module contract.
-     * @param _owner The owner of this contract.
+       @param _interchainSecurityModule The interchain security module contract.
+       @param _owner The this contract.
      */
     function initialize(
         address _hook,
@@ -158,9 +114,9 @@ contract HypNative is TokenRouter, ReentrancyGuard {
     /**
      * @inheritdoc TokenRouter
      * @dev uses (`msg.value` - `_amount`) as hook payment and `msg.sender` as refund address.
-     * @dev Calculates USD value of native token being bridged and sends this value cross chain.
-     * @dev Checks if the amount being bridged is within the safe bridgeable amount.
-     * @dev Takes the outbound bridging fee from the user and distributes to liquidity providers + Insurance Fund.
+     * @dev Hyperspeed Bridge: Edited to calculate USD value of ETH being bridged and sends this value cross chain.
+     * @dev Hyperspeed Bridge: Edited to check if the amount being bridged is within the safe bridgeable amount.
+     * @dev Hyperspeed Bridge: Edited to take the outbound bridging fee from the user and distribute to liquidity providers + Insurance Fund.
      */
     function transferRemote(
         uint32 _destination,
@@ -175,17 +131,17 @@ contract HypNative is TokenRouter, ReentrancyGuard {
         uint256 amountAfterFee = _amount - fee;
         _distributeFees(fee);
 
-        // Get the latest native token/USD price
-        uint256 nativePrice = getLatestPrice();
+        // Get the latest ETH/USD price from Chainlink
+        int256 ethUsdPrice = getChainlinkDataFeedLatestAnswer();
 
-        // Calculate the USD value of the native token being bridged
-        uint256 _usdValue = (amountAfterFee * nativePrice) / 1e18;
+        // Calculate the USD value of the ETH being bridged
+        uint256 _usdValue = (amountAfterFee * uint256(ethUsdPrice)) / 1e18;
         require(
-            _usdValue <= otherChainAvailableLiquidity,
+            _usdValue <= rootstockAvailableLiquidity,
             "Insufficient liquidity on the destination chain"
         );
 
-        // Checks if any transfers have reached finality and updates the pending bridge amount accordingly.
+        // Hyperspeed Bridge: Checks if any transfers have reached finality and updates the pending bridge amount accordingly.
         _processFinalizedTransfers();
 
         // Checks the safe amount that can be currently bridged given the Insurance Fund and the pending bridged amount awaiting finality.
@@ -222,6 +178,7 @@ contract HypNative is TokenRouter, ReentrancyGuard {
     /**
      * @inheritdoc TokenRouter
      * @dev No-op because native amount is transferred in `msg.value`
+     * @dev Compiler will not include this in the bytecode.
      */
     function _transferFromSender(
         uint256
@@ -232,63 +189,56 @@ contract HypNative is TokenRouter, ReentrancyGuard {
     /**
      * @dev Sends `_amount` of native token to `_recipient` balance.
      * @inheritdoc TokenRouter
-     * @dev Receives the USD value of the incoming native token and converts it to the local native token.
-     * @dev Takes the inbound bridging fee from the user and distributes to liquidity providers + Insurance Fund.
+     * @dev Hyperspeed Bridge: Edited to receive the USD value of the incoming RBTC and convert it into ETH.
+     * @dev Hyperspeed Bridge: Edited to take the inbound bridging fee from the user and distribute to liquidity providers + Insurance Fund..
      */
     function _transferTo(
         address _recipient,
         uint256 _amount,
-        bytes calldata
+        bytes calldata // no metadata
     ) internal virtual override nonReentrant {
-        // Get the latest native token/USD price
-        uint256 nativePrice = getLatestPrice();
+        // Get the latest ETH/USD price from Chainlink
+        int256 ethUsdPrice = getChainlinkDataFeedLatestAnswer();
 
-        // Calculate the amount that was received in native token
-        uint256 nativeValue = (_amount * 1e18) / nativePrice;
+        // Calculate the amount that was received in ETH
+        uint256 _ethValue = (_amount * uint256(ethUsdPrice)) / 1e18;
 
         // Take the inbound bridging fee
-        uint256 fee = (nativeValue * INBOUND_FEE_PERCENTAGE) / 10000;
-        uint256 amountAfterFee = nativeValue - fee;
+        uint256 fee = (_ethValue * INBOUND_FEE_PERCENTAGE) / 10000;
+        uint256 amountAfterFee = _ethValue - fee;
         _distributeFees(fee);
 
         Address.sendValue(payable(_recipient), amountAfterFee);
     }
 
-    /**
-     * @dev Gets the latest native token/USD price from the appropriate price feed
-     * @return price The latest native token/USD price
-     */
-    function getLatestPrice() public view returns (uint256) {
-        if (isEthereum) {
-            (, int256 answer, , , ) = chainlinkDataFeed.latestRoundData();
-            require(answer > 0, "Invalid ETH/USD price");
-            return uint256(answer);
-        } else {
-            IUmbrellaFeeds.PriceData memory priceData = umbrellaFeeds
-                .getPriceDataByName("RBTC-USD");
-            require(priceData.price > 0, "Invalid RBTC/USD price");
-            return uint256(priceData.price);
-        }
+    function getChainlinkDataFeedLatestAnswer() public view returns (int) {
+        (
+            ,
+            /* uint80 roundID */ int answer /*uint startedAt*/ /*uint timeStamp*/ /*uint80 answeredInRound*/,
+            ,
+            ,
+
+        ) = dataFeed.latestRoundData();
+        require(answer > 0, "Invalid ETH/USD price");
+        return answer;
     }
 
     function getInsuranceFundAmount() public view returns (uint256) {
-        // Determine the amount of native token in the Insurance Fund
-        uint256 insuranceFundNativeAmount = address(insuranceFund).balance;
+        // Determine the amount of ETH in the Insurance Fund
+        uint256 insuranceFundEthAmount = address(insuranceFund).balance;
 
-        // Get the latest native token/USD price
-        uint256 nativePrice = getLatestPrice();
+        // Get the latest ETH/USD price from Chainlink
+        int256 ethUsdPrice = getChainlinkDataFeedLatestAnswer();
 
         // Determine the amount of USD value in the Insurance Fund
-        uint256 insuranceFundUsdAmount = (insuranceFundNativeAmount *
-            nativePrice) / 1e18;
+        uint256 insuranceFundUsdAmount = (insuranceFundEthAmount *
+            uint256(ethUsdPrice)) / 1e18;
         return insuranceFundUsdAmount;
     }
 
-    /**
-     * @dev Hyperspeed Bridge: Sends the current amount of funds in the Insurance Fund in the message.
-     * @dev Hyperspeed Bridge: Sends the current amount of available liquidity in the message.
-     * @dev Hyperspeed Bridge: Sends the transfer ID in the message.
-     */
+    /// @dev Hyperspeed Bridge: Edited to send the current amount of funds in the Insurance Fund in the message.
+    /// @dev Hyperspeed Bridge: Edited to send the current amount of available liquidity in the message.
+    /// @dev Hyperspeed Bridge: Edited to send the transfer ID in the message.
     function _transferRemote(
         uint32 _destination,
         bytes32 _recipient,
@@ -297,13 +247,14 @@ contract HypNative is TokenRouter, ReentrancyGuard {
         bytes memory _hookMetadata,
         address _hook
     ) internal virtual override returns (bytes32 messageId) {
-        uint256 nativePrice = getLatestPrice();
-        uint256 _availableLiquidity = (totalLiquidity() * nativePrice) / 1e18;
+        int256 ethUsdPrice = getChainlinkDataFeedLatestAnswer();
+        uint256 _availableLiquidity = (totalLiquidity() *
+            uint256(ethUsdPrice)) / 1e18;
         uint256 _insuranceFundAmount = getInsuranceFundAmount();
 
         bytes memory _tokenMetadata = abi.encode(
-            _insuranceFundAmount,
-            _availableLiquidity,
+            getInsuranceFundAmount(),
+            totalLiquidity(),
             nextTransferId,
             block.number
         );
@@ -324,9 +275,7 @@ contract HypNative is TokenRouter, ReentrancyGuard {
         emit SentTransferRemote(_destination, _recipient, _amountOrId);
     }
 
-    /**
-     * @dev Hyperspeed Bridge: Receives and stores the current amount of funds in the Insurance Fund on the outbound chain.
-     */
+    /// @dev Hyperspeed Bridge: Edited to receive and store the current amount of funds in the Insurance Fund on the outbound chain.
     function _handle(
         uint32 _origin,
         bytes32,
@@ -356,9 +305,9 @@ contract HypNative is TokenRouter, ReentrancyGuard {
             // Pull funds from insurance fund
             uint256 reorgAmountUsd = transferRecords[_origin][_transferId]
                 .amount;
-            uint256 reorgAmountNative = (reorgAmountUsd * 1e18) /
-                getLatestPrice();
-            insuranceFund.liquidateForReorg(reorgAmountNative);
+            uint256 reorgAmountEth = (reorgAmountUsd * 1e18) /
+                uint256(getChainlinkDataFeedLatestAnswer());
+            insuranceFund.liquidateForReorg(reorgAmountEth);
         }
 
         // Store the transfer record
@@ -368,8 +317,8 @@ contract HypNative is TokenRouter, ReentrancyGuard {
         });
 
         // Update the Insurance Fund and Available Liquidity that is on the other chain
-        otherChainInsuranceFundAmount = _insuranceFundAmount;
-        otherChainAvailableLiquidity = _availableLiquidity;
+        rootstockInsuranceFundAmount = _insuranceFundAmount;
+        rootstockAvailableLiquidity = _availableLiquidity;
 
         // Transfer the bridged asset to the recipient
         _transferTo(address(uint160(uint256(recipient))), amount, metadata);
@@ -457,7 +406,7 @@ contract HypNative is TokenRouter, ReentrancyGuard {
         uint256 liquidityProviderFee = (_fee *
             LIQUIDITY_PROVIDER_REWARD_SHARE) / 100;
 
-        // Allocate liquidity provider fees
+        // Allocate liquidty provider fees
         totalFees += liquidityProviderFee;
 
         // Distribute to insurance fund
