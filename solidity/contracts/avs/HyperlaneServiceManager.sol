@@ -172,6 +172,7 @@ contract HyperlaneServiceManager is ECDSAServiceManagerBase {
     function freezeOperator(
         address operator
     ) external virtual onlyEnrolledChallenger(operator) {
+        /// We assume the function freezeOperator has security mechanism to prevent anyone to slash an operator
         slasher.freezeOperator(operator);
     }
 

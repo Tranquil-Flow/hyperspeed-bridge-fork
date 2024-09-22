@@ -16,7 +16,8 @@ module.exports = {
         enabled: true,
         runs: 999_999,
       },
-    },
+      viaIR: true
+    }
   },
   gasReporter: {
     currency: 'USD',
