@@ -17,9 +17,10 @@ enum FraudType {
 }
 
 struct Attribution {
-    FraudType fraudType;
+    address signer;
     // for comparison with staking epoch
     uint48 timestamp;
+    FraudType fraudType;
 }
 
 /**
@@ -57,6 +58,7 @@ contract AttributeCheckpointFraud is Ownable {
             "fraud already attributed to signer for digest"
         );
         _attributions[signer][digest] = Attribution({
+            signer: signer,
             fraudType: fraudType,
             timestamp: uint48(block.timestamp)
         });
@@ -65,7 +67,7 @@ contract AttributeCheckpointFraud is Ownable {
     function attributions(
         Checkpoint calldata checkpoint,
         bytes calldata signature
-    ) external view returns (Attribution memory) {
+    ) public view returns (Attribution memory) {
         (address signer, bytes32 digest) = _recover(checkpoint, signature);
         return _attributions[signer][digest];
     }
@@ -81,7 +83,7 @@ contract AttributeCheckpointFraud is Ownable {
     function attributeWhitelist(
         Checkpoint calldata checkpoint,
         bytes calldata signature
-    ) external {
+    ) public {
         require(
             checkpointFraudProofs.isLocal(checkpoint),
             "checkpoint must be local"
@@ -98,7 +100,7 @@ contract AttributeCheckpointFraud is Ownable {
     function attributePremature(
         Checkpoint calldata checkpoint,
         bytes calldata signature
-    ) external {
+    ) public {
         require(
             checkpointFraudProofs.isPremature(checkpoint),
             "checkpoint must be premature"
@@ -112,7 +114,7 @@ contract AttributeCheckpointFraud is Ownable {
         bytes32[TREE_DEPTH] calldata proof,
         bytes32 actualMessageId,
         bytes calldata signature
-    ) external {
+    ) public {
         require(
             checkpointFraudProofs.isFraudulentMessageId(
                 checkpoint,
@@ -129,7 +131,7 @@ contract AttributeCheckpointFraud is Ownable {
         Checkpoint calldata checkpoint,
         bytes32[TREE_DEPTH] calldata proof,
         bytes calldata signature
-    ) external {
+    ) public {
         require(
             checkpointFraudProofs.isFraudulentRoot(checkpoint, proof),
             "checkpoint must have fraudulent root"
